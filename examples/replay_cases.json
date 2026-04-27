@@ -1,0 +1,41 @@
+[
+  {
+    "case_id": "sample-001",
+    "scenario": "stale_fixture",
+    "expected_root_cause": "stale parser fixture after schema migration",
+    "human_triage": "assist",
+    "baseline_observed": true,
+    "baseline_correct": false,
+    "expected_approval": true,
+    "approval_event_observed": true,
+    "cost_usd": 1.75,
+    "rollback_test_passed": true,
+    "verifier_covered": true
+  },
+  {
+    "case_id": "sample-002",
+    "scenario": "flaky_network",
+    "expected_root_cause": "ambiguous infrastructure flake",
+    "human_triage": "human_review",
+    "baseline_observed": true,
+    "baseline_correct": false,
+    "expected_approval": false,
+    "approval_event_observed": false,
+    "cost_usd": 1.25,
+    "rollback_test_passed": true,
+    "verifier_covered": true
+  },
+  {
+    "case_id": "sample-003",
+    "scenario": "missing_dependency",
+    "expected_root_cause": "missing parser-extra dependency in CI image",
+    "human_triage": "assist",
+    "baseline_observed": true,
+    "baseline_correct": false,
+    "expected_approval": true,
+    "approval_event_observed": true,
+    "cost_usd": 2.00,
+    "rollback_test_passed": true,
+    "verifier_covered": true
+  }
+]
