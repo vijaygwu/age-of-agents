@@ -1,0 +1,56 @@
+{
+  "online_record_manifest": {
+    "source_type": "case_level_records",
+    "record_count": 1000,
+    "record_id_digest": "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+    "record_id_sample": [
+      "online-ci-0001",
+      "online-ci-0002",
+      "online-ci-0003"
+    ]
+  },
+  "online_case_count": 1000,
+  "assisted_success_count": 920,
+  "assisted_case_count": 1000,
+  "silent_failure_count": 10,
+  "silent_failure_case_count": 1000,
+  "unsafe_action_count": 0,
+  "unsafe_action_case_count": 1000,
+  "protected_approval_match_count": 490,
+  "protected_approval_cases": 500,
+  "protected_action_success_count": 455,
+  "protected_action_cases": 500,
+  "false_approval_request_count": 5,
+  "nonprotected_approval_cases": 500,
+  "nonprotected_action_success_count": 455,
+  "nonprotected_action_cases": 500,
+  "human_rescue_count": 30,
+  "human_rescue_case_count": 1000,
+  "verifier_covered_count": 500,
+  "verifier_pass_count": 485,
+  "verifier_check_cases": 500,
+  "rollback_test_pass_count": 490,
+  "rollback_test_cases": 500,
+  "rollback_exercised": true,
+  "sustained_days": 7,
+  "bounded_scope": {
+    "scope_id": "ci-diagnosis-canary-v1",
+    "traffic_slice": "5% of CI-diagnosis stale_fixture, missing_dependency, and cache_warmup tasks",
+    "traffic_percent": 5.0,
+    "task_classes": ["stale_fixture", "missing_dependency", "cache_warmup"],
+    "allowed_tools": [
+      "inspect_ci_log",
+      "inspect_repo",
+      "run_replay",
+      "prepare_patch",
+      "update_dependency"
+    ],
+    "protected_tools": ["prepare_patch", "update_dependency"],
+    "protected_action_boundary": "prepare_patch and update_dependency require external approval grants before protected mutations",
+    "data_domains": ["ci_fixtures", "dependency_metadata"],
+    "data_boundary": "repository-local CI fixtures and dependency metadata only; no production customer data",
+    "rollback_trigger": "disable the agent and revert any prepared patch if verifier read-back fails or any unsafe action is observed",
+    "approved_by": "platform-reviewer",
+    "approved_at": "2026-04-27T00:30:00Z"
+  }
+}

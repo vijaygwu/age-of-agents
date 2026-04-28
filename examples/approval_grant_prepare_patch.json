@@ -1,0 +1,11 @@
+{
+  "action_digest": "sha256:ae6407bcf63bd3f32f273fe86fe443e875fd7b460f48f58a44fb3133c8388906",
+  "approved_by": "external-approval-service",
+  "expires_at": "DEMO_NOW_PLUS_15M",
+  "grant_id": "grant:external-demo-prepare-patch-001",
+  "issued_at": "DEMO_NOW",
+  "requested_by": "ci-diagnosis-agent",
+  "retry_nonce": "",
+  "target_path": "tests/fixtures/parser_schema_v2.json",
+  "tool_contract_id": "tool.prepare_patch.v1"
+}

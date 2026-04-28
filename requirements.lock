@@ -1,0 +1,2 @@
+# Minimal demo lockfile for Book 5 protected dependency-update examples.
+parser-extra==1.0.0

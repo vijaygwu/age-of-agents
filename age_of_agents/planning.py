@@ -76,12 +76,30 @@ def run_plan_act_verify_replan(scenario: str, step_budget: int = 5) -> PlanningR
             budget_remaining -= 1
             replan_count = 1
         final_decision = "escalate_with_evidence_packet"
-    else:
+    elif not diagnosis.approval_required:
         if budget_remaining > 0:
             steps.append(
                 PlanStep(
-                    name="prepare protected change request",
-                    tool="prepare_patch",
+                    name="complete read-only recovery",
+                    tool="run_replay",
+                    expected_postcondition="replay completed without protected mutation",
+                    evidence=diagnosis.next_action,
+                    status="verified",
+                )
+            )
+            budget_remaining -= 1
+        final_decision = "complete_without_protected_change"
+    else:
+        protected_tool_by_scenario = {
+            "missing_dependency": ("prepare dependency update request", "update_dependency"),
+            "stale_fixture": ("prepare fixture patch request", "prepare_patch"),
+        }
+        request_name, protected_tool = protected_tool_by_scenario[scenario]
+        if budget_remaining > 0:
+            steps.append(
+                PlanStep(
+                    name=request_name,
+                    tool=protected_tool,
                     expected_postcondition="human review request includes trace evidence",
                     evidence=diagnosis.next_action,
                     status="approval_required",

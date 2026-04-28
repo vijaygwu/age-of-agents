@@ -1,0 +1,10 @@
+{
+  "schema_version": 2,
+  "fields": [
+    "case_id",
+    "scenario",
+    "expected_root_cause",
+    "human_triage"
+  ],
+  "notes": "Minimal fixture used by the Book 5 protected-tool approval example."
+}

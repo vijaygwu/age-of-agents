@@ -8,8 +8,10 @@ and escalate when the evidence is not strong enough.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 from dataclasses import asdict, dataclass
+from datetime import datetime, timedelta, timezone
 from typing import Iterable
 
 from .tool_policy import TOOL_CONTRACTS, ToolContract
@@ -31,6 +33,8 @@ class StepTrace:
     started_at: str
     completed_at: str
     side_effect_summary: str
+    requested_by: str
+    approved_by: str
 
 
 @dataclass(frozen=True)
@@ -65,6 +69,11 @@ SCENARIOS = {
         "repo": "no code-path change explains the failure",
         "replay": "retry succeeds once but failure evidence is ambiguous",
     },
+    "cache_warmup": {
+        "log": "first parser shard is slow after image refresh but recovers on replay",
+        "repo": "cache initialization path is read-only and needs no fixture or dependency change",
+        "replay": "sandbox replay warms the cache and passes without a protected write",
+    },
 }
 
 
@@ -75,23 +84,33 @@ def _trace(
     decision: str,
     scenario: str,
     sequence: int,
+    run_id: str,
+    base_time: datetime,
+    postcondition_result: str = "passed",
+    evaluation_lane: str = "offline_replay",
+    requested_by: str = "ci-diagnosis-agent",
+    approved_by: str = "",
 ) -> StepTrace:
     contract = READ_ONLY_TOOLS[step]
+    started_at = base_time + timedelta(seconds=sequence)
+    completed_at = base_time + timedelta(seconds=sequence + 1)
     return StepTrace(
-        run_id=f"ci-demo-{scenario}",
+        run_id=run_id,
         agent_version="book5-demo-v1",
-        evaluation_lane="offline_replay",
+        evaluation_lane=evaluation_lane,
         step=step,
         tool_contract_id=contract.tool_contract_id,
         tool_args={"scenario": scenario},
         evidence=evidence,
         approval_outcome="not_required",
         verifier=verifier,
-        postcondition_result="passed",
+        postcondition_result=postcondition_result,
         decision=decision,
-        started_at=f"2026-04-26T00:00:{sequence:02d}Z",
-        completed_at=f"2026-04-26T00:00:{sequence + 1:02d}Z",
+        started_at=started_at.isoformat(timespec="seconds").replace("+00:00", "Z"),
+        completed_at=completed_at.isoformat(timespec="seconds").replace("+00:00", "Z"),
         side_effect_summary=contract.side_effects,
+        requested_by=requested_by,
+        approved_by=approved_by,
     )
 
 
@@ -103,11 +122,14 @@ def _require_known_scenario(scenario: str) -> dict[str, str]:
         raise ValueError(f"unknown scenario {scenario!r}; expected one of: {known}") from exc
 
 
-def diagnose_ci_failure(scenario: str) -> DiagnosisResult:
+def diagnose_ci_failure(scenario: str, evaluation_lane: str = "offline_replay") -> DiagnosisResult:
     """Diagnose a bounded CI failure without taking protected side effects."""
 
     facts = _require_known_scenario(scenario)
     traces: list[StepTrace] = []
+    run_suffix = hashlib.sha256(f"{scenario}:{evaluation_lane}".encode("utf-8")).hexdigest()[:8]
+    run_id = f"ci-demo-{scenario}-{run_suffix}"
+    base_time = datetime(2026, 4, 27, 0, 0, tzinfo=timezone.utc)
 
     traces.append(
         _trace(
@@ -117,6 +139,9 @@ def diagnose_ci_failure(scenario: str) -> DiagnosisResult:
             "continue: failure signature is narrow enough for repo inspection",
             scenario,
             0,
+            run_id,
+            base_time,
+            evaluation_lane=evaluation_lane,
         )
     )
     traces.append(
@@ -127,6 +152,9 @@ def diagnose_ci_failure(scenario: str) -> DiagnosisResult:
             "continue: hypothesis is testable in sandbox replay",
             scenario,
             2,
+            run_id,
+            base_time,
+            evaluation_lane=evaluation_lane,
         )
     )
     traces.append(
@@ -137,6 +165,10 @@ def diagnose_ci_failure(scenario: str) -> DiagnosisResult:
             "evaluate replay evidence before proposing a protected change",
             scenario,
             4,
+            run_id,
+            base_time,
+            postcondition_result="ambiguous" if scenario == "flaky_network" else "passed",
+            evaluation_lane=evaluation_lane,
         )
     )
 
@@ -156,6 +188,16 @@ def diagnose_ci_failure(scenario: str) -> DiagnosisResult:
             root_cause="missing parser-extra dependency in CI image",
             next_action="prepare a dependency update proposal and request review",
             approval_required=True,
+            escalation_required=False,
+            traces=tuple(traces),
+        )
+
+    if scenario == "cache_warmup":
+        return DiagnosisResult(
+            scenario=scenario,
+            root_cause="cold parser cache after image refresh",
+            next_action="run the read-only cache warmup replay and keep monitoring",
+            approval_required=False,
             escalation_required=False,
             traces=tuple(traces),
         )

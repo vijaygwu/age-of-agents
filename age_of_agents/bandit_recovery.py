@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 from dataclasses import asdict, dataclass
 from typing import Iterable
 
@@ -32,10 +33,20 @@ class BanditDecision:
 
 RECOVERY_ARMS = (
     RecoveryArm("refresh_fixture", "stale_fixture", 8, 10, protected_live_action=False),
-    RecoveryArm("update_dependency_manifest", "missing_dependency", 7, 10, protected_live_action=False),
+    RecoveryArm("rerun_schema_migration_replay", "stale_fixture", 5, 12, protected_live_action=False),
+    RecoveryArm("propose_dependency_update", "missing_dependency", 7, 10, protected_live_action=False),
+    RecoveryArm("inspect_dependency_cache", "missing_dependency", 4, 9, protected_live_action=False),
     RecoveryArm("retry_network_job", "flaky_network", 4, 10, protected_live_action=False),
+    RecoveryArm("collect_network_trace", "flaky_network", 6, 12, protected_live_action=False),
     RecoveryArm("push_direct_fix", "stale_fixture", 10, 10, protected_live_action=True),
 )
+
+
+def ucb_score(arm: RecoveryArm, total_trials: int) -> float:
+    """Upper confidence bound over sandbox-only trial outcomes."""
+
+    exploration = (math.log(total_trials) / arm.sandbox_trials) ** 0.5
+    return arm.empirical_success_rate + exploration
 
 
 def choose_recovery_strategy(scenario: str) -> BanditDecision:
@@ -49,13 +60,14 @@ def choose_recovery_strategy(scenario: str) -> BanditDecision:
     eligible = [arm for arm in candidates if not arm.protected_live_action]
     if not eligible:
         raise ValueError(f"no sandbox recovery arms registered for scenario: {scenario}")
-    selected = max(eligible, key=lambda arm: arm.empirical_success_rate)
+    total_trials = sum(arm.sandbox_trials for arm in eligible)
+    selected = max(eligible, key=lambda arm: ucb_score(arm, total_trials))
     return BanditDecision(
         scenario=scenario,
         selected_arm=selected.name,
-        selected_score=round(selected.empirical_success_rate, 2),
+        selected_score=round(ucb_score(selected, total_trials), 2),
         blocked_arms=blocked,
-        policy_note="bandit choice is limited to sandbox recovery proposals, not autonomous live writes",
+        policy_note="UCB-style bandit choice is limited to sandbox recovery proposals, not autonomous live writes",
     )
 
 

@@ -3,13 +3,15 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 from dataclasses import asdict, dataclass
+from datetime import datetime, timedelta, timezone
 from pathlib import Path, PurePosixPath
 from typing import Iterable
 
 
-KNOWN_SCENARIOS = ("flaky_network", "missing_dependency", "stale_fixture")
+KNOWN_SCENARIOS = ("cache_warmup", "flaky_network", "missing_dependency", "stale_fixture")
 WORKSPACE_ROOT = Path(__file__).resolve().parents[1]
 
 
@@ -33,10 +35,13 @@ class ToolContract:
 class ApprovalGrant:
     tool_contract_id: str
     target_path: str
-    actor: str
+    requested_by: str
+    approved_by: str
+    action_digest: str
     issued_at: str
     expires_at: str
     retry_nonce: str = ""
+    grant_id: str = ""
 
 
 @dataclass(frozen=True)
@@ -45,6 +50,9 @@ class ToolRequest:
     args: dict[str, str]
     attempt: int = 1
     approval_grant: ApprovalGrant | None = None
+    requested_by: str = "ci-diagnosis-agent"
+    action_digest: str = ""
+    consumed_grant_ids: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -109,7 +117,7 @@ TOOL_CONTRACTS = {
         requires_approval=True,
         idempotent=False,
         postcondition="patch diff exists and verifier can inspect it",
-        required_args=("scenario", "target_path"),
+        required_args=("scenario", "target_path", "mutation_artifact"),
         allowed_scenarios=("stale_fixture",),
         allowed_path_prefixes=("fixtures/", "tests/fixtures/"),
     ),
@@ -121,7 +129,7 @@ TOOL_CONTRACTS = {
         requires_approval=True,
         idempotent=False,
         postcondition="dependency diff exists and tests can be rerun",
-        required_args=("scenario", "target_path"),
+        required_args=("scenario", "target_path", "mutation_artifact"),
         allowed_scenarios=("missing_dependency",),
         allowed_exact_paths=("pyproject.toml", "requirements.txt", "requirements.lock", "uv.lock"),
         allowed_path_prefixes=("requirements/",),
@@ -132,6 +140,12 @@ TOOL_CONTRACTS = {
 DEFAULT_TARGET_PATHS = {
     "prepare_patch": "tests/fixtures/parser_schema_v2.json",
     "update_dependency": "requirements.lock",
+}
+
+
+DEFAULT_MUTATION_ARTIFACTS = {
+    "prepare_patch": "patch:sha256:demo-refresh-parser-fixture-v1",
+    "update_dependency": "lock-diff:sha256:demo-propose-parser-extra-lock-update-v1",
 }
 
 
@@ -163,29 +177,159 @@ def _approval_target(args: dict[str, str]) -> str:
     return args.get("target_path") or args.get("path") or ""
 
 
+def build_action_digest(contract: ToolContract, args: dict[str, str]) -> str:
+    """Create a deterministic digest over the canonical protected-action payload."""
+
+    normalized_args: dict[str, str] = {}
+    for key, value in sorted(args.items()):
+        if key in {"target_path", "path"}:
+            normalized, error = _normalize_workspace_path(value)
+            normalized_args[key] = normalized if not error and normalized else value
+        else:
+            normalized_args[key] = value
+    payload = {
+        "tool_contract_id": contract.tool_contract_id,
+        "args": normalized_args,
+    }
+    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return "sha256:" + hashlib.sha256(encoded).hexdigest()
+
+
+DEFAULT_ACTION_DIGESTS = {
+    tool_name: build_action_digest(
+        TOOL_CONTRACTS[tool_name],
+        {
+            "scenario": "missing_dependency" if tool_name == "update_dependency" else "stale_fixture",
+            "target_path": DEFAULT_TARGET_PATHS[tool_name],
+            "mutation_artifact": DEFAULT_MUTATION_ARTIFACTS[tool_name],
+        },
+    )
+    for tool_name in DEFAULT_MUTATION_ARTIFACTS
+}
+
+
+def _utc_timestamp(value: datetime) -> str:
+    return value.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def _parse_utc_timestamp(value: str) -> datetime | None:
+    try:
+        normalized = value.replace("Z", "+00:00") if value.endswith("Z") else value
+        parsed = datetime.fromisoformat(normalized)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
 def build_approval_grant(
     contract: ToolContract,
     args: dict[str, str],
     *,
-    actor: str = "platform-reviewer",
-    issued_at: str = "2026-04-26T00:00:00Z",
-    expires_at: str = "2026-12-31T23:59:59Z",
+    requested_by: str = "ci-diagnosis-agent",
+    approved_by: str = "platform-reviewer",
+    action_digest: str = "",
+    issued_at: str | None = None,
+    expires_at: str | None = None,
     retry_nonce: str = "",
 ) -> ApprovalGrant:
+    issued = _parse_utc_timestamp(issued_at) if issued_at else datetime.now(timezone.utc)
+    if issued is None:
+        raise ValueError("approval issued_at must be an ISO-8601 UTC timestamp")
+    expires = _parse_utc_timestamp(expires_at) if expires_at else issued + timedelta(minutes=15)
+    if expires is None:
+        raise ValueError("approval expires_at must be an ISO-8601 UTC timestamp")
+
     target_path = _approval_target(args)
     if target_path:
         normalized, error = _normalize_workspace_path(target_path)
         if error:
             normalized = target_path
         target_path = normalized or target_path
+    issued_text = _utc_timestamp(issued)
+    expires_text = _utc_timestamp(expires)
+    digest = action_digest or build_action_digest(contract, args)
+    grant_payload = {
+        "tool_contract_id": contract.tool_contract_id,
+        "target_path": target_path,
+        "requested_by": requested_by,
+        "approved_by": approved_by,
+        "action_digest": digest,
+        "issued_at": issued_text,
+        "expires_at": expires_text,
+        "retry_nonce": retry_nonce,
+    }
+    encoded = json.dumps(grant_payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
     return ApprovalGrant(
         tool_contract_id=contract.tool_contract_id,
         target_path=target_path,
-        actor=actor,
+        requested_by=requested_by,
+        approved_by=approved_by,
+        action_digest=digest,
+        issued_at=issued_text,
+        expires_at=expires_text,
+        retry_nonce=retry_nonce,
+        grant_id="grant:" + hashlib.sha256(encoded).hexdigest()[:16],
+    )
+
+
+def approval_grant_from_dict(payload: dict[str, object]) -> ApprovalGrant:
+    required = (
+        "tool_contract_id",
+        "target_path",
+        "requested_by",
+        "approved_by",
+        "action_digest",
+        "issued_at",
+        "expires_at",
+        "grant_id",
+    )
+    missing = [field for field in required if not payload.get(field)]
+    if missing:
+        raise ValueError("approval grant missing required fields: " + ", ".join(missing))
+    issued_at = str(payload["issued_at"])
+    expires_at = str(payload["expires_at"])
+    if issued_at == "DEMO_NOW" and expires_at == "DEMO_NOW_PLUS_15M":
+        issued = datetime.now(timezone.utc)
+        issued_at = _utc_timestamp(issued)
+        expires_at = _utc_timestamp(issued + timedelta(minutes=15))
+    return ApprovalGrant(
+        tool_contract_id=str(payload["tool_contract_id"]),
+        target_path=str(payload["target_path"]),
+        requested_by=str(payload["requested_by"]),
+        approved_by=str(payload["approved_by"]),
+        action_digest=str(payload["action_digest"]),
         issued_at=issued_at,
         expires_at=expires_at,
-        retry_nonce=retry_nonce,
+        retry_nonce=str(payload.get("retry_nonce", "")),
+        grant_id=str(payload["grant_id"]),
     )
+
+
+def load_approval_grant(path: str | Path) -> ApprovalGrant:
+    payload = json.loads(Path(path).read_text())
+    if not isinstance(payload, dict):
+        raise ValueError("approval grant file must contain a JSON object")
+    return approval_grant_from_dict(payload)
+
+
+def load_consumed_grant_ids(path: str | Path) -> tuple[str, ...]:
+    registry = Path(path)
+    if not registry.exists():
+        return ()
+    payload = json.loads(registry.read_text())
+    if not isinstance(payload, list):
+        raise ValueError("consumed grant registry must contain a JSON list")
+    return tuple(str(item) for item in payload)
+
+
+def store_consumed_grant_id(path: str | Path, grant_id: str) -> None:
+    registry = Path(path)
+    consumed = list(load_consumed_grant_ids(registry))
+    if grant_id not in consumed:
+        consumed.append(grant_id)
+    registry.write_text(json.dumps(consumed, indent=2, sort_keys=True) + "\n")
 
 
 def validate_approval_grant(
@@ -193,7 +337,11 @@ def validate_approval_grant(
     args: dict[str, str],
     grant: ApprovalGrant | None,
     *,
+    requested_by: str,
+    request_action_digest: str,
     required_retry_nonce: str = "",
+    consumed_grant_ids: tuple[str, ...] = (),
+    now: datetime | None = None,
 ) -> tuple[bool, tuple[str, ...]]:
     if grant is None:
         return False, ("missing scoped approval grant",)
@@ -211,12 +359,36 @@ def validate_approval_grant(
         errors.append("approval grant is bound to a different tool contract")
     if grant.target_path != target_path:
         errors.append("approval grant target path does not match request target")
-    if not grant.actor:
-        errors.append("approval grant must include an actor")
-    if not grant.issued_at or not grant.expires_at or grant.expires_at <= grant.issued_at:
+    if not requested_by:
+        errors.append("tool request must include a requester")
+    elif grant.requested_by != requested_by:
+        errors.append("approval grant requester does not match request actor")
+    if not grant.approved_by:
+        errors.append("approval grant must include an approver")
+    elif grant.approved_by == requested_by:
+        errors.append("approval grant approver must be distinct from request actor")
+    if not request_action_digest:
+        errors.append("protected tool request must include an action digest")
+    elif request_action_digest != build_action_digest(contract, args):
+        errors.append("request action digest does not match canonical action payload")
+    elif grant.action_digest != request_action_digest:
+        errors.append("approval grant action digest does not match request action")
+    issued_at = _parse_utc_timestamp(grant.issued_at)
+    expires_at = _parse_utc_timestamp(grant.expires_at)
+    checked_at = now or datetime.now(timezone.utc)
+    if issued_at is None or expires_at is None or expires_at <= issued_at:
         errors.append("approval grant must include a valid issued/expires window")
+    else:
+        if issued_at > checked_at + timedelta(minutes=1):
+            errors.append("approval grant was issued in the future")
+        if expires_at <= checked_at:
+            errors.append("approval grant has expired")
     if required_retry_nonce and grant.retry_nonce != required_retry_nonce:
         errors.append("mutable retry requires a fresh retry nonce")
+    if not grant.grant_id:
+        errors.append("approval grant must include a single-use grant id")
+    elif grant.grant_id in consumed_grant_ids:
+        errors.append("approval grant was already consumed")
     return not errors, tuple(errors)
 
 
@@ -316,7 +488,10 @@ def evaluate_tool_request(request: ToolRequest) -> PolicyDecision:
         contract,
         request.args,
         request.approval_grant,
+        requested_by=request.requested_by,
+        request_action_digest=request.action_digest,
         required_retry_nonce=required_retry_nonce,
+        consumed_grant_ids=request.consumed_grant_ids,
     )
 
     if request.attempt > 1 and not contract.idempotent and not approval_valid:
@@ -351,11 +526,16 @@ def evaluate_tool_request(request: ToolRequest) -> PolicyDecision:
 
 def build_cli_args(tool_name: str, scenario: str, target_path: str, invalid_args: bool) -> dict[str, str]:
     if invalid_args:
-        return {"scenario": scenario, "target_path": "/etc/passwd"}
+        args = {"scenario": scenario, "target_path": "/etc/passwd"}
+        if tool_name in DEFAULT_MUTATION_ARTIFACTS:
+            args["mutation_artifact"] = DEFAULT_MUTATION_ARTIFACTS[tool_name]
+        return args
 
     args = {"scenario": scenario}
     if tool_name in DEFAULT_TARGET_PATHS:
         args["target_path"] = target_path or DEFAULT_TARGET_PATHS[tool_name]
+    if tool_name in DEFAULT_MUTATION_ARTIFACTS:
+        args["mutation_artifact"] = DEFAULT_MUTATION_ARTIFACTS[tool_name]
     return args
 
 
@@ -369,20 +549,33 @@ def main(argv: Iterable[str] | None = None) -> int:
     parser.add_argument("--scenario", choices=KNOWN_SCENARIOS, default="stale_fixture")
     parser.add_argument("--target-path", default="")
     parser.add_argument("--attempt", type=int, default=1)
+    parser.add_argument("--request-actor", default="ci-diagnosis-agent")
     parser.add_argument("--approve", action="store_true", help="Attach a scoped demo approval grant.")
+    parser.add_argument("--approval-grant-file", help="Read a scoped grant issued by an external approval service.")
+    parser.add_argument("--consumed-grants-file", help="JSON registry of consumed external approval grant ids.")
     parser.add_argument("--approval-actor", default="platform-reviewer")
-    parser.add_argument("--approval-expires-at", default="2026-12-31T23:59:59Z")
+    parser.add_argument("--action-digest", default="")
+    parser.add_argument("--approval-issued-at", default="", help="Optional ISO issue time for demo grants.")
+    parser.add_argument("--approval-expires-at", default="", help="Optional ISO expiry; default is issued_at + 15m.")
     parser.add_argument("--retry-nonce", default="")
     parser.add_argument("--invalid-args", action="store_true", help="Send an intentionally invalid path.")
     args = parser.parse_args(list(argv) if argv is not None else None)
+    if args.approve and args.approval_grant_file:
+        parser.error("--approve and --approval-grant-file are mutually exclusive")
+    if args.approval_grant_file and not args.consumed_grants_file:
+        parser.error("--approval-grant-file requires --consumed-grants-file for single-use replay protection")
     request_args = build_cli_args(args.tool, args.scenario, args.target_path, args.invalid_args)
     contract = TOOL_CONTRACTS[args.tool]
-    approval_grant = (
+    action_digest = args.action_digest or build_action_digest(contract, request_args)
+    approval_grant = load_approval_grant(args.approval_grant_file) if args.approval_grant_file else (
         build_approval_grant(
             contract,
             request_args,
-            actor=args.approval_actor,
-            expires_at=args.approval_expires_at,
+            requested_by=args.request_actor,
+            approved_by=args.approval_actor,
+            action_digest=action_digest,
+            issued_at=args.approval_issued_at or None,
+            expires_at=args.approval_expires_at or None,
             retry_nonce=args.retry_nonce,
         )
         if args.approve
@@ -393,8 +586,18 @@ def main(argv: Iterable[str] | None = None) -> int:
         args=request_args,
         attempt=args.attempt,
         approval_grant=approval_grant,
+        requested_by=args.request_actor,
+        action_digest=action_digest,
+        consumed_grant_ids=(
+            load_consumed_grant_ids(args.consumed_grants_file)
+            if args.consumed_grants_file
+            else ()
+        ),
     )
-    print(decision_to_json(evaluate_tool_request(request)))
+    decision = evaluate_tool_request(request)
+    if decision.allowed and args.approval_grant_file and approval_grant is not None:
+        store_consumed_grant_id(args.consumed_grants_file, approval_grant.grant_id)
+    print(decision_to_json(decision))
     return 0
 
 
