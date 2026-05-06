@@ -352,6 +352,7 @@ def _bounded_scope_matches_report(report: EvaluationReport, online_evidence: Onl
 
 
 def _wilson_lower(successes: int, count: int, z: float) -> float:
+    assert count > 0, "count must be positive"
     p = successes / count
     denom = 1 + z * z / count
     center = p + z * z / (2 * count)
@@ -360,6 +361,7 @@ def _wilson_lower(successes: int, count: int, z: float) -> float:
 
 
 def _wilson_upper(successes: int, count: int, z: float) -> float:
+    assert count > 0, "count must be positive"
     p = successes / count
     denom = 1 + z * z / count
     center = p + z * z / (2 * count)
