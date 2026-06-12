@@ -43,8 +43,13 @@ RECOVERY_ARMS = (
 
 
 def ucb_score(arm: RecoveryArm, total_trials: int) -> float:
-    """Upper confidence bound over sandbox-only trial outcomes."""
+    """Upper confidence bound over sandbox-only trial outcomes.
 
+    This is a UCB variant for constrained sandbox trials where total_trials
+    is summed over eligible arms only. The exploration term can be large
+    for arms with few trials, which is appropriate for encouraging
+    exploration of under-tested recovery strategies in sandbox.
+    """
     exploration = (math.log(total_trials) / arm.sandbox_trials) ** 0.5
     return arm.empirical_success_rate + exploration
 
