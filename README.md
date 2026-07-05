@@ -16,11 +16,11 @@ python3 -m age_of_agents.ci_diagnosis --scenario missing_dependency
 python3 -m age_of_agents.ci_diagnosis --scenario flaky_network
 python3 -m age_of_agents.agent_loop --scenario stale_fixture
 python3 -m age_of_agents.agent_loop --scenario stale_fixture --approve
-python3 -m age_of_agents.agent_loop --scenario stale_fixture --approval-grant-file examples/approval_grant_prepare_patch.json --consumed-grants-file /tmp/book5-consumed-grants.json
+python3 -m age_of_agents.agent_loop --scenario stale_fixture --approval-grant-file examples/approval_grant_prepare_patch.json --consumed-grants-file /tmp/book5-consumed-grants-agent-loop.json
 python3 -m age_of_agents.tool_policy --tool prepare_patch
 python3 -m age_of_agents.tool_policy --tool prepare_patch --invalid-args
 python3 -m age_of_agents.tool_policy --tool prepare_patch --approve
-python3 -m age_of_agents.tool_policy --tool prepare_patch --approval-grant-file examples/approval_grant_prepare_patch.json --consumed-grants-file /tmp/book5-consumed-grants.json
+python3 -m age_of_agents.tool_policy --tool prepare_patch --approval-grant-file examples/approval_grant_prepare_patch.json --consumed-grants-file /tmp/book5-consumed-grants-tool-policy.json
 python3 -m age_of_agents.tool_policy --tool prepare_patch --attempt 2 --approve
 python3 -m age_of_agents.tool_policy --tool prepare_patch --attempt 2 --approve --retry-nonce retry-2
 python3 -m age_of_agents.planning --scenario flaky_network
